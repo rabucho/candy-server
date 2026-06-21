@@ -16,15 +16,17 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS orders (
-    id         TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    items      TEXT NOT NULL,
-    total      INTEGER NOT NULL,
-    status     TEXT NOT NULL DEFAULT 'PENDING'
-                 CHECK(status IN ('PENDING','CONFIRMED','DISPATCHED','REJECTED')),
-    sms_ref    TEXT,
-    notes      TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    buyer_name  TEXT,
+    buyer_phone TEXT,
+    items       TEXT NOT NULL,
+    total       INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'PENDING'
+                  CHECK(status IN ('PENDING','CONFIRMED','DISPATCHED','REJECTED')),
+    sms_ref     TEXT,
+    notes       TEXT,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
   CREATE TABLE IF NOT EXISTS messages (
@@ -34,6 +36,13 @@ db.exec(`
     content     TEXT NOT NULL,
     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
   );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+  );
+
+  INSERT OR IGNORE INTO settings(key, value) VALUES ('shop_open', 'true');
 
   CREATE INDEX IF NOT EXISTS idx_orders_session   ON orders(session_id);
   CREATE INDEX IF NOT EXISTS idx_orders_created   ON orders(created_at);

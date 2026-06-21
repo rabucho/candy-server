@@ -52,8 +52,15 @@ const io = new Server(server, {
 let sellerSocket = null;
 const SELLER_PIN = process.env.SELLER_PIN || '112233';
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const authTimeout = setTimeout(() => socket.disconnect(true), 5000);
+
+  // Send current shop status immediately on connection
+  try {
+    const shopSetting = await dbGet(`SELECT value FROM settings WHERE key = 'shop_open'`, []);
+    const isOpen = shopSetting ? shopSetting.value === 'true' : true;
+    socket.emit('shop:status', isOpen);
+  } catch(e) {}
 
   socket.on('auth', async ({ role, sessionId, pin }) => {
     clearTimeout(authTimeout);
@@ -102,19 +109,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Shop Toggle (Seller only) ───────────────────────────────
+  socket.on('shop:toggle', async ({ isOpen }) => {
+    if (socket.data.role !== 'seller') return;
+    try {
+      const val = isOpen ? 'true' : 'false';
+      await dbRun(`UPDATE settings SET value = ? WHERE key = 'shop_open'`, [val]);
+      io.emit('shop:status', isOpen);
+    } catch (err) {
+      console.error('Shop toggle error:', err.message);
+    }
+  });
+
   // ── Order creation ──────────────────────────────────────────
-  socket.on('order:create', async ({ items, total, notes }) => {
+  socket.on('order:create', async ({ items, total, notes, buyerName, buyerPhone }) => {
     if (socket.data.role !== 'buyer') return;
     const id    = uuidv4();
     const sid   = socket.data.sessionId;
     const now   = Math.floor(Date.now() / 1000);
     try {
       await dbRun(
-        `INSERT INTO orders(id, session_id, items, total, status, notes, created_at)
-         VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
-        [id, sid, JSON.stringify(items), total, notes || null, now]
+        `INSERT INTO orders(id, session_id, buyer_name, buyer_phone, items, total, status, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+        [id, sid, buyerName || null, buyerPhone || null, JSON.stringify(items), total, notes || null, now]
       );
-      const order = { id, session_id: sid, items: JSON.stringify(items), total, status: 'PENDING', notes: notes || null, created_at: now };
+      const order = { 
+        id, session_id: sid, buyer_name: buyerName || null, buyer_phone: buyerPhone || null, 
+        items: JSON.stringify(items), total, status: 'PENDING', notes: notes || null, created_at: now 
+      };
       socket.emit('order:created', order);
       if (sellerSocket?.connected) sellerSocket.emit('order:new', order);
     } catch (err) {
@@ -220,21 +242,31 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Seller requests all threads ─────────────────────────────
+  socket.on('chat:threads', async () => {
+    if (socket.data.role !== 'seller') return;
+    try {
+      // Get the latest message for each thread
+      const threads = await dbAll(`
+        SELECT thread_id, content, sender_role, created_at 
+        FROM messages 
+        WHERE id IN (
+          SELECT id FROM messages 
+          GROUP BY thread_id 
+          HAVING created_at = MAX(created_at)
+        )
+        ORDER BY created_at DESC
+        LIMIT 50
+      `, []);
+      socket.emit('chat:threads', threads);
+    } catch (err) {
+      console.error('Threads fetch error:', err.message);
+    }
+  });
+
   socket.on('disconnect', () => {
     if (socket.data.role === 'seller') sellerSocket = null;
   });
-});
-
-// ─── 24h auto‑delete cron ────────────────────────────────────
-cron.schedule('0 * * * *', async () => {
-  const cutoff = Math.floor(Date.now() / 1000) - 86400;
-  try {
-    await dbRun(`DELETE FROM messages WHERE created_at < ?`, [cutoff]);
-    await dbRun(`DELETE FROM orders   WHERE created_at < ?`, [cutoff]);
-    await dbRun(`DELETE FROM sessions  WHERE created_at < ?`, [cutoff]);
-  } catch (err) {
-    console.error('Cron cleanup error:', err.message);
-  }
 });
 
 // ─── Global error handler to prevent crashes ────────────────
